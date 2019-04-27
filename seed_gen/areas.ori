@@ -2060,15 +2060,30 @@ home: LowerLeftGumoHideout
 		casual-core ChargeJump
 		casual-core Bash Grenade
 		expert-core Climb DoubleJump
+		expert-core Bash DoubleJump
+		expert-core Bash Glide
 		dbash Bash
 		master-abilities DoubleJump Ability=12
+		master-abilities Stomp Dash Ability=6
 	pickup: LeftGumoHideoutHealthCell
 		casual-core WallJump DoubleJump
 		casual-core WallJump ChargeJump
 		casual-core Climb ChargeJump
 		casual-core Bash Grenade
-		dbash Bash
+		casual-core Bash DoubleJump Climb
+		casual-core Climb Glide Bash
+		casual-core WallJump Glide Bash
+		casual-dboost Bash WallJump Health=2
+		casual-dboost Bash Climb Health=2
+		standard-abilities Bash Climb Dash Ability=3
+		standard-abilities Bash WallJump Dash Ability=3
+		expert-core Climb DoubleJump Glide
+		expert-core Climb Dash Bash
+		expert-core WallJump Dash Bash
 		expert-abilities Dash Ability=6
+		expert-abilities Climb DoubleJump Dash Ability=3
+		dbash Bash
+		master-core ChargeJump DoubleJump
 		master-abilities DoubleJump Ability=12
 	pickup: LeftGumoHideoutSwim
 		casual-core Water
