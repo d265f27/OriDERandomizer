@@ -530,6 +530,7 @@ public static class Randomizer {
         }
 
         if (RandomizerRebinding.ReloadSeed.IsPressed()) {
+            Scenes.Manager.StartSceneChecking();
             initialize();
             if (RandomizerSettings.Dev) {
                 log("Reset and loaded seed: " + SeedMeta);
@@ -1760,6 +1761,6 @@ public static class Randomizer {
     public static Vector3 SpawnPosition;
 
     public static string SpawnScene;
-    
+
     public static bool ShouldHideGladesStart;
 }

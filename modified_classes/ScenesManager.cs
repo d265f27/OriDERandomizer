@@ -4,6 +4,7 @@ using System.Collections.Generic;
 using Core;
 using Game;
 using UnityEngine;
+using System.Reflection;
 
 public class ScenesManager : SaveSerialize {
     public bool ScenesNotLoadedOnTime { get; private set; }
@@ -508,6 +509,9 @@ public class ScenesManager : SaveSerialize {
     }
 
     public void Update() {
+        if (ShouldStartChecking || IsChecking) {
+            ProgressSceneChecking();
+        }
         if (this.m_resourcesNeedUnloading == 1) {
             SaveSceneManager.Master.ReleaseNullReferences();
             SuspensionManager.CleanupSuspendables();
@@ -668,6 +672,7 @@ public class ScenesManager : SaveSerialize {
     }
 
     public void UnloadScenesAtPosition(bool instant) {
+        if (IsChecking) { return; }
         Rect clampedRect = this.GetClampedRect(this.CurrentCameraTargetPosition);
         for (int i = 0; i < this.ActiveScenes.Count; i++) {
             SceneManagerScene sceneManagerScene = this.ActiveScenes[i];
@@ -705,6 +710,7 @@ public class ScenesManager : SaveSerialize {
     }
 
     public bool UnloadScene(SceneManagerScene scene, bool keepInMemory, bool instant) {
+        if (IsChecking) { return false; }
         if (!this.AllowDestroying) {
             keepInMemory = true;
         }
@@ -770,6 +776,7 @@ public class ScenesManager : SaveSerialize {
     }
 
     public void UnloadDependantScenes() {
+        if (IsChecking) { return; }
         Vector3 vector = this.CurrentCameraTargetPosition;
         this.m_scenesToDisable.Clear();
         this.m_scenesToInclude.Clear();
@@ -968,6 +975,7 @@ public class ScenesManager : SaveSerialize {
     }
 
     public void UnloadAllScenes() {
+        if (IsChecking) { return; }
         foreach (SceneManagerScene sceneManagerScene in this.ActiveScenes.ToArray()) {
             if (!sceneManagerScene.IsTitleScreen) {
                 switch (sceneManagerScene.CurrentState) {
@@ -1043,6 +1051,229 @@ public class ScenesManager : SaveSerialize {
         return null;
     }
 
+    public void AdditivelyLoadSceneWithoutDependencies(RuntimeSceneMetaData sceneMetaData, bool async, bool keepPreloaded = false) {
+        SceneManagerScene fromCurrentScenes = GetFromCurrentScenes(sceneMetaData);
+        if (fromCurrentScenes != null) {
+            if (fromCurrentScenes.CurrentState == SceneManagerScene.State.LoadingCancelled) {
+                fromCurrentScenes.ChangeState(SceneManagerScene.State.Loading);
+                if (keepPreloaded) {
+                    fromCurrentScenes.PreventUnloading = true;
+                    return;
+                }
+            }
+        } else if (Application.CanStreamedLevelBeLoaded(sceneMetaData.Scene)) {
+            if (CanLoadScenes) {
+                if (async) {
+                    Application.LoadLevelAdditiveAsync(sceneMetaData.Scene).priority = 2;
+                } else {
+                    Application.LoadLevelAdditive(sceneMetaData.Scene);
+                }
+            }
+            SceneManagerScene sceneManagerScene = new SceneManagerScene(sceneMetaData);
+            ActiveScenes.Add(sceneManagerScene);
+            sceneManagerScene.PreventUnloading = keepPreloaded;
+        }
+    }
+
+    public RuntimeSceneMetaData GetSceneManagerSceneFromAll(string sceneName) {
+        for (int i = 0; i < Core.Scenes.Manager.AllScenes.Count; i++) {
+            if (Core.Scenes.Manager.AllScenes[i].Scene == sceneName) {
+                return Core.Scenes.Manager.AllScenes[i];
+            }
+        }
+        return null;
+    }
+
+    public bool SceneIsLoaded(string sceneName) {
+        foreach (SceneManagerScene sceneManagerScene in Core.Scenes.Manager.ActiveScenes) {
+            if (sceneManagerScene.MetaData.Scene == sceneName) {
+                if (sceneManagerScene.CurrentState == SceneManagerScene.State.Loading || sceneManagerScene.CurrentState == SceneManagerScene.State.LoadingCancelled) {
+                    return false;
+                }
+                return true;
+            }
+        }
+        return false;
+    }
+
+    public bool SceneHasDisappeared(string sceneName) {
+        foreach (SceneManagerScene sceneManagerScene in Core.Scenes.Manager.ActiveScenes) {
+            if (sceneManagerScene.MetaData.Scene == sceneName) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    public bool CheckingUnloadScene(SceneManagerScene scene, bool keepInMemory, bool instant) {
+        if (!this.AllowDestroying) {
+            keepInMemory = true;
+        }
+        if (keepInMemory) {
+            switch (scene.CurrentState) {
+                case SceneManagerScene.State.Disabling:
+                    if (Time.time > scene.UnloadTime || instant) {
+                        this.OnDisableSceneRoot(scene.SceneRoot);
+                        scene.ChangeState(SceneManagerScene.State.Disabled);
+                        scene.SceneRoot.Save();
+                        scene.SceneRoot.DisableScene();
+                    }
+                    return false;
+                case SceneManagerScene.State.LoadingCancelled:
+                    scene.ChangeState(SceneManagerScene.State.Loading);
+                    return false;
+                case SceneManagerScene.State.Loaded:
+                    if (instant) {
+                        scene.ChangeState(SceneManagerScene.State.Disabled);
+                        scene.SceneRoot.Save();
+                        this.OnDisableSceneRoot(scene.SceneRoot);
+                        scene.SceneRoot.DisableScene();
+                    } else {
+                        scene.ChangeState(SceneManagerScene.State.Disabling);
+                        scene.UnloadTime = Time.time + this.UnloadDelay;
+                    }
+                    return false;
+            }
+        } else {
+            switch (scene.CurrentState) {
+                case SceneManagerScene.State.Disabling:
+                    if (Time.time > scene.UnloadTime) {
+                        this.OnDisableSceneRoot(scene.SceneRoot);
+                        scene.SceneRoot.SaveAndUnload();
+                        this.RemoveScene(scene);
+                        return true;
+                    }
+                    return false;
+                case SceneManagerScene.State.Disabled:
+                    scene.SceneRoot.Unload();
+                    this.RemoveScene(scene);
+                    return true;
+                case SceneManagerScene.State.Loading:
+                    scene.ChangeState(SceneManagerScene.State.LoadingCancelled);
+                    return this.CancelScene(scene);
+                case SceneManagerScene.State.Loaded:
+                    if (instant) {
+                        this.OnDisableSceneRoot(scene.SceneRoot);
+                        scene.SceneRoot.SaveAndUnload();
+                        this.RemoveScene(scene);
+                        return true;
+                    }
+                    scene.ChangeState(SceneManagerScene.State.Disabling);
+                    scene.UnloadTime = Time.time + this.UnloadDelay;
+                    return false;
+            }
+        }
+        return false;
+    }
+
+
+    public void StartSceneChecking() {
+        // Usage: Call this while on the main menu.
+        ShouldStartChecking = true;
+        CheckingIndex = 0;
+        IsChecking = false;
+        IsWaiting = false;
+    }
+
+    public void ProgressSceneChecking() {
+        try {
+            if (ShouldStartChecking && !IsChecking) {
+                ShouldStartChecking = false;
+                IsChecking = true;
+                Randomizer.log("Starting preloading.");
+
+                // If you only want to check certain scenes add them to the ScenesToCheck field, otherwise
+                // all scenes will be checked apart from the banned ones.
+                if (ScenesToCheck.Count == 0) {
+                    for (int i = 0; i < AllScenes.Count; i++) {
+                        string name = AllScenes[i].Scene;
+                        if (!BannedScenes.Contains(name)) {
+                            ScenesToCheck.Add(name);
+                        }
+                    }
+                }
+                CheckingIndex = 0;
+                IsWaiting = false;
+            }
+            if (IsWaiting) {
+                bool moveForward = false;
+                // See if the current one is in the list and is fully loaded.
+                if (SceneIsLoaded(ScenesToCheck[CheckingIndex])) {
+                    CheckingSceneManagerScene = Core.Scenes.Manager.GetSceneManagerScene(ScenesToCheck[CheckingIndex]);
+                    Randomizer.log("Finished loading scene " + ScenesToCheck[CheckingIndex]);
+                    CheckScene(CheckingSceneManagerScene.SceneRoot);
+                    CheckingUnloadScene(CheckingSceneManagerScene, false, true);
+                    moveForward = true;
+                } else if (SceneHasDisappeared(ScenesToCheck[CheckingIndex])) {
+                    // If the scene we are waiting for disappears then try again, once, after all other things.
+                    if (!DisapperedScenes.Contains(ScenesToCheck[CheckingIndex])) {
+                        Randomizer.log("Finished loading scene " + ScenesToCheck[CheckingIndex] + " disappeared, trying again");
+                        DisapperedScenes.Add(ScenesToCheck[CheckingIndex]);
+                        ScenesToCheck.Add(ScenesToCheck[CheckingIndex]);
+                    } else {
+                        Randomizer.log("Finished loading scene " + ScenesToCheck[CheckingIndex] + " disappeared twice");
+                    }
+                    moveForward = true;
+                }
+
+                if (moveForward) {
+                    IsWaiting = false;
+                    CheckingIndex++;
+                    if (CheckingIndex >= ScenesToCheck.Count) {
+                        IsChecking = false;
+                        Randomizer.log("Finished Checking.");
+                    }
+                }
+
+                return;
+            } else {
+                Randomizer.log("Started loading scene " + ScenesToCheck[CheckingIndex]);
+                CheckingSceneMetaData = GetSceneManagerSceneFromAll(ScenesToCheck[CheckingIndex]);
+                AdditivelyLoadSceneWithoutDependencies(CheckingSceneMetaData, true, true);
+                IsWaiting = true;
+            }
+        } catch (Exception ex) {
+            Randomizer.log(ex.ToString());
+            IsChecking = false;
+        }
+    }
+
+    private void CheckScene(SceneRoot sceneRoot) {
+        Randomizer.log("Checking Scene: " + sceneRoot.name);
+        // Iterate over RespawningPlaceholder
+        RespawningPlaceholder[] respawners = sceneRoot.transform.GetComponentsInChildren<RespawningPlaceholder>();
+        foreach (RespawningPlaceholder respawner in respawners) {
+            Randomizer.log("    " + respawner.GetType().Name + ": " + respawner.MoonGuid.ToString() + " - " + GetNicePath(respawner.transform));
+
+            if (respawner is JumperEnemyPlaceholder) {
+                Transform jumpingZone = (respawner as JumperEnemyPlaceholder).JumpingZone;
+                if (jumpingZone != null) {
+                    Randomizer.log("        JumpingZone: Position " + jumpingZone.position.ToString() + " scale " + jumpingZone.localScale.ToString());
+                }
+            }
+
+            bool PrintGenericReflection = true;
+            if (PrintGenericReflection) {
+                Type type = respawner.GetType();
+                BindingFlags flags = BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance | BindingFlags.Static;
+                FieldInfo[] fields = type.GetFields(flags);
+                foreach (FieldInfo field in fields) {
+                    object value = field.GetValue(respawner) ?? "null";
+                    Randomizer.log($"        {field.Name} = {value}");
+                }
+            }
+        }
+    }
+
+    public string GetNicePath(Transform element) {
+        string output = element.name;
+        while (element.parent != null) {
+            element = element.parent;
+            output = element.name + "/" + output;
+        }
+        return output;
+    }
+
     public float UnloadDelay = 1f;
 
     public List<SceneManagerScene> ActiveScenes = new List<SceneManagerScene>();
@@ -1084,4 +1315,23 @@ public class ScenesManager : SaveSerialize {
     private float m_testDelayTime;
 
     public LayerMask RaycastMask;
+
+    private bool ShouldStartChecking = false;
+
+    private bool IsChecking = false;
+
+    private bool IsWaiting = false;
+
+    private List<string> BannedScenes = new List<string>() { "IntroLogos", "titleScreenSwallowsNest", "worldMapScene" };
+
+    private List<string> ScenesToCheck = new List<string>();
+
+    private int CheckingIndex = 0;
+
+    private RuntimeSceneMetaData CheckingSceneMetaData = null;
+
+    private SceneManagerScene CheckingSceneManagerScene = null;
+
+    private List<string> DisapperedScenes = new List<string>();
 }
+
